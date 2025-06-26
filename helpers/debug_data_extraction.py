@@ -1,119 +1,93 @@
 #!/usr/bin/env python3
 """
-Debug script to investigate data extraction issues
+Debug script to examine the data and understand the new features
 """
 
-import json
-import glob
 import pandas as pd
-from collections import Counter
+import numpy as np
 
-def debug_record_extraction():
-    """Debug the record extraction process"""
-    
-    # Load a few sample records
-    json_files = glob.glob('records-json-2025/*.json')[:10]
-    
-    print("=== DEBUGGING RECORD EXTRACTION ===\n")
-    
-    journal_titles = []
-    community_counts = []
-    user_ids = []
-    
-    for filepath in json_files:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            record = json.load(f)
-            
-        record_id = record.get('id')
-        user_id = record.get('parent', {}).get('access', {}).get('owned_by', {}).get('user')
-        user_ids.append(user_id)
-        
-        # Check journal extraction
-        journal_title = None
-        if 'custom_fields' in record.get('metadata', {}) and \
-           'journal:journal' in record['metadata']['custom_fields']:
-            journal_title = record['metadata']['custom_fields']['journal:journal'].get('title')
-        
-        if journal_title:
-            journal_titles.append(journal_title)
-            print(f"Record {record_id}: Found journal '{journal_title}'")
-        
-        # Check community extraction
-        communities = record.get('communities', {})
-        print(f"Record {record_id}: Communities structure: {type(communities)} = {communities}")
-        
-        if isinstance(communities, dict) and 'ids' in communities:
-            community_list = communities['ids']
-            if community_list:
-                community_counts.extend(community_list)
-                print(f"Record {record_id}: Found communities {community_list}")
-        elif isinstance(communities, list):
-            community_counts.extend(communities)
-            print(f"Record {record_id}: Found communities {communities}")
-        else:
-            print(f"Record {record_id}: No communities found")
-    
-    print(f"\n=== SUMMARY ===")
-    print(f"Records checked: {len(json_files)}")
-    print(f"Records with journal titles: {len(journal_titles)}")
-    print(f"Unique journal titles: {len(set(journal_titles))}")
-    print(f"Records with communities: {len(community_counts)}")
-    print(f"Unique communities: {len(set(community_counts))}")
-    print(f"Unique user IDs: {len(set(user_ids))}")
-    
-    if journal_titles:
-        print(f"\nSample journal titles: {journal_titles[:5]}")
-    if community_counts:
-        print(f"Sample communities: {list(set(community_counts))[:5]}")
+# Load the data
+print("Loading data...")
+users_df = pd.read_parquet('data/users.parquet')
+records_df = pd.read_parquet('data/records.parquet')
 
-def debug_spam_matching():
-    """Debug spam record matching"""
-    
-    print("\n=== DEBUGGING SPAM MATCHING ===\n")
-    
-    # Load spam records
-    spam_df = pd.read_csv('records-deleted-2025.csv')
-    spam_record_ids = set(spam_df['record_id'].astype(str))
-    
-    print(f"Total spam records: {len(spam_df)}")
-    print(f"Unique spam record IDs: {len(spam_record_ids)}")
-    print(f"Sample spam record IDs: {list(spam_record_ids)[:5]}")
-    
-    # Check if any spam records exist in our JSON files
-    json_files = glob.glob('records-json-2025/*.json')
-    found_spam = 0
-    
-    for filepath in json_files[:100]:  # Check first 100 files
-        record_id = filepath.split('/')[-1].replace('.json', '')
-        if record_id in spam_record_ids:
-            found_spam += 1
-            print(f"Found spam record: {record_id}")
-    
-    print(f"Spam records found in JSON files (first 100): {found_spam}")
+print(f"Loaded {len(users_df)} users and {len(records_df)} records")
 
-def debug_user_volume():
-    """Debug user volume patterns"""
-    
-    print("\n=== DEBUGGING USER VOLUME ===\n")
-    
-    # Load a sample of records to check user distribution
-    json_files = glob.glob('records-json-2025/*.json')
-    user_counts = Counter()
-    
-    for filepath in json_files[:1000]:  # Check first 1000 files
-        with open(filepath, 'r', encoding='utf-8') as f:
-            record = json.load(f)
-        
-        user_id = record.get('parent', {}).get('access', {}).get('owned_by', {}).get('user')
-        if user_id:
-            user_counts[user_id] += 1
-    
-    print(f"Users in first 1000 records: {len(user_counts)}")
-    print(f"Most active users:")
-    for user_id, count in user_counts.most_common(10):
-        print(f"  User {user_id}: {count} records")
+# Check the new features
+print("\n=== NEW FEATURES ANALYSIS ===")
 
-if __name__ == "__main__":
-    debug_record_extraction()
-    debug_spam_matching()
-    debug_user_volume() 
+# Check repetitive author scores
+print(f"Users with repetitive_author_score > 0.3: {len(users_df[users_df['repetitive_author_score'] > 0.3])}")
+print(f"Users with repetitive_author_score > 0.5: {len(users_df[users_df['repetitive_author_score'] > 0.5])}")
+print(f"Users with repetitive_author_score > 0.7: {len(users_df[users_df['repetitive_author_score'] > 0.7])}")
+
+# Check safe communities
+print(f"Users with safe communities: {users_df['has_safe_community'].sum()}")
+
+# Check high-volume users
+high_volume = users_df[users_df['n_records'] >= 50]
+print(f"Users with >= 50 records: {len(high_volume)}")
+
+# Check external DOI consistency
+print(f"Users with external_doi_consistency >= 0.7: {len(users_df[users_df['external_doi_consistency'] >= 0.7])}")
+
+# Check primary author ratio
+print(f"Users with primary_author_ratio <= 0.3: {len(users_df[users_df['primary_author_ratio'] <= 0.3])}")
+
+# Check upload regularity
+print(f"Users with upload_regularity >= 0.1: {len(users_df[users_df['upload_regularity'] >= 0.1])}")
+
+# Apply criteria step by step
+print("\n=== STEP-BY-STEP CRITERIA ANALYSIS ===")
+
+step1 = users_df[users_df['n_records'] >= 50]
+print(f"Step 1 (>=50 records): {len(step1)} users")
+
+step2 = step1[step1['external_doi_consistency'] >= 0.7]
+print(f"Step 2 (+external DOI consistency >=0.7): {len(step2)} users")
+
+step3 = step2[step2['primary_author_ratio'] <= 0.3]
+print(f"Step 3 (+primary author ratio <=0.3): {len(step3)} users")
+
+step4 = step3[step3['upload_regularity'] >= 0.1]
+print(f"Step 4 (+upload regularity >=0.1): {len(step4)} users")
+
+step5 = step4[step4['spam_record_ratio'] <= 0.1]
+print(f"Step 5 (+spam ratio <=0.1): {len(step5)} users")
+
+step6 = step5[~step5['has_safe_community']]
+print(f"Step 6 (+no safe communities): {len(step6)} users")
+
+step7 = step6[step6['repetitive_author_score'] >= 0.3]
+print(f"Step 7 (+repetitive author score >=0.3): {len(step7)} users")
+
+# Show top users by record count with their features
+print("\n=== TOP 10 USERS BY RECORD COUNT ===")
+top_users = users_df.nlargest(10, 'n_records')
+for _, user in top_users.iterrows():
+    print(f"User {user['user_id']}: {user['n_records']} records, "
+          f"ext_doi_cons: {user['external_doi_consistency']:.3f}, "
+          f"rep_author: {user['repetitive_author_score']:.3f}, "
+          f"safe_comm: {user['has_safe_community']}, "
+          f"primary_ratio: {user['primary_author_ratio']:.3f}")
+
+# Check some specific users
+print("\n=== EXAMINING SPECIFIC USERS ===")
+user_1161 = users_df[users_df['user_id'] == 1161]
+if len(user_1161) > 0:
+    user = user_1161.iloc[0]
+    print(f"User 1161: {user['n_records']} records")
+    print(f"  - External DOI consistency: {user['external_doi_consistency']:.3f}")
+    print(f"  - Repetitive author score: {user['repetitive_author_score']:.3f}")
+    print(f"  - Has safe community: {user['has_safe_community']}")
+    print(f"  - Primary author ratio: {user['primary_author_ratio']:.3f}")
+    print(f"  - Upload regularity: {user['upload_regularity']:.3f}")
+
+# Check what communities user 1161 has
+user_1161_records = records_df[records_df['user_id'] == 1161]
+if len(user_1161_records) > 0:
+    all_communities = []
+    for communities in user_1161_records['community_slugs'].dropna():
+        if isinstance(communities, list):
+            all_communities.extend(communities)
+    print(f"  - Communities: {set(all_communities)}") 

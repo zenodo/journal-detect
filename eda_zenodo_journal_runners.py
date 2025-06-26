@@ -57,9 +57,14 @@ CONFIG = {
     'sample_size': None,  # Set to number for sampling, None for full dataset
     'chunk_size': 1000,   # Process files in chunks
     'min_records_threshold': 20,
-    'zenodo_ratio_threshold': 0.8,
-    'community_ratio_threshold': 0,
-    'max_external_prefixes': 1
+    'external_doi_consistency_threshold': 0.7,  # 70% of external DOIs use same prefix
+    'max_external_prefixes': 3,  # Max unique external DOI prefixes
+    'min_upload_regularity': 0.1,  # Much more mild upload regularity threshold (was 0.3)
+    'max_spam_ratio': 0.1,  # Max 10% spam records
+    # Safe communities that indicate independent users (not journal runners)
+    'safe_communities': ['eu', 'biosyslit'],  # EU Open Research Repository and Biodiversity Literature Repository
+    'repetitive_author_threshold': 0.3,  # If 30% of entries have no author intersection, likely journal runner
+    'min_author_intersection_ratio': 0.2  # Minimum ratio of entries that share at least one author
 }
 
 print(f"Configuration loaded. Processing directory: {CONFIG['json_dir']}")
@@ -92,14 +97,44 @@ def extract_record_features(record):
         doi = record.get('pids', {}).get('doi', {}).get('identifier', '')
         is_zenodo_doi = doi.startswith('10.5281/zenodo.') if doi else False
         
+        # External DOI prefix (for consistency analysis)
+        external_doi_prefix = None
+        if doi and not is_zenodo_doi and '/' in doi:
+            external_doi_prefix = doi.split('/')[0]
+        
         # Journal info
         journal_title = None
         if 'custom_fields' in record and \
            'journal:journal' in record['custom_fields']:
             journal_title = record['custom_fields']['journal:journal'].get('title')
         
-        # Community info
-        communities = record.get('communities', {}).get('ids', [])
+        # Author analysis - extract all author names from the full author list
+        creators = record.get('metadata', {}).get('creators', [])
+        n_authors = len(creators) if creators else 0
+        
+        # Extract all author names for intersection analysis
+        author_names = []
+        if creators:
+            for creator in creators:
+                if 'person_or_org' in creator and 'name' in creator['person_or_org']:
+                    author_names.append(creator['person_or_org']['name'])
+        
+        # Title analysis
+        title = record.get('metadata', {}).get('title', '')
+        
+        # Community info - check both main record and parent, extract slug
+        communities = []
+        community_slugs = []
+        if 'communities' in record and 'ids' in record['communities']:
+            communities = record['communities']['ids']
+        elif 'parent' in record and 'communities' in record['parent'] and 'ids' in record['parent']['communities']:
+            communities = record['parent']['communities']['ids']
+        
+        # Extract community slugs
+        if 'parent' in record and 'communities' in record['parent'] and 'entries' in record['parent']['communities']:
+            for entry in record['parent']['communities']['entries']:
+                if 'slug' in entry:
+                    community_slugs.append(entry['slug'])
         
         # File info
         file_count = record.get('files', {}).get('count', 0)
@@ -110,8 +145,13 @@ def extract_record_features(record):
             'created': created,
             'doi': doi,
             'is_zenodo_doi': is_zenodo_doi,
+            'external_doi_prefix': external_doi_prefix,
             'journal_title': journal_title,
+            'n_authors': n_authors,
+            'author_names': author_names,
+            'title': title,
             'communities': communities,
+            'community_slugs': community_slugs,
             'file_count': file_count
         }
     except Exception as e:
@@ -226,50 +266,90 @@ def extract_user_features(user_records):
     # Basic counts
     n_records = len(user_records)
     
-    # DOI analysis
-    zenodo_ratio = user_records['is_zenodo_doi'].mean()
-    
-    # DOI prefixes (external journals)
-    external_dois = user_records[~user_records['is_zenodo_doi']]['doi'].dropna()
+    # External DOI consistency (more important than Zenodo ratio)
+    external_dois = user_records[~user_records['is_zenodo_doi']]['external_doi_prefix'].dropna()
     if len(external_dois) > 0:
-        prefixes = [doi.split('/')[0] for doi in external_dois if '/' in doi]
-        n_external_prefixes = len(set(prefixes))
+        unique_prefixes = external_dois.nunique()
+        most_common_prefix = external_dois.mode().iloc[0] if len(external_dois.mode()) > 0 else None
+        external_doi_consistency = (external_dois == most_common_prefix).mean() if most_common_prefix else 0.0
     else:
-        n_external_prefixes = 0
+        unique_prefixes = 0
+        external_doi_consistency = 0.0
+    
+    # Author analysis - check for repetitive authors (this is the key feature for journal runners)
+    all_author_lists = user_records['author_names'].dropna().tolist()
+    no_repetitive_author_score = 0.0
+    author_intersection_ratio = 0.0
+    
+    if len(all_author_lists) >= 2:
+        # Calculate how many pairs of entries have no author intersection
+        no_intersection_count = 0
+        total_pairs = 0
+        
+        for i in range(len(all_author_lists)):
+            for j in range(i+1, len(all_author_lists)):
+                total_pairs += 1
+                set1 = set(all_author_lists[i])
+                set2 = set(all_author_lists[j])
+                if len(set1.intersection(set2)) == 0:
+                    no_intersection_count += 1
+        
+        if total_pairs > 0:
+            no_repetitive_author_score = no_intersection_count / total_pairs
+            author_intersection_ratio = 1.0 - no_repetitive_author_score
     
     # Journal title consistency
     journal_titles = user_records['journal_title'].dropna()
     distinct_journal_title_cnt = journal_titles.nunique()
     
-    # Community analysis
-    all_communities = []
-    for communities in user_records['communities'].dropna():
-        if isinstance(communities, list):
-            all_communities.extend(communities)
+    # Community analysis - check for safe communities
+    all_community_slugs = []
+    for community_slugs in user_records['community_slugs'].dropna():
+        if isinstance(community_slugs, list):
+            all_community_slugs.extend(community_slugs)
     
-    if all_communities:
-        community_counts = pd.Series(all_communities).value_counts()
+    # Check if user has any safe communities (indicates independent user)
+    has_safe_community = any(slug in CONFIG['safe_communities'] for slug in all_community_slugs)
+    
+    # Community dedication ratio (kept as feature but no threshold)
+    if all_community_slugs:
+        community_counts = pd.Series(all_community_slugs).value_counts()
         most_common_community = community_counts.index[0]
-        same_comm_ratio = community_counts.iloc[0] / len(all_communities)
+        same_comm_ratio = community_counts.iloc[0] / len(all_community_slugs)
     else:
         same_comm_ratio = 0.0
     
-    # Temporal burstiness
+    # Temporal analysis
     upload_times = user_records['created'].dropna()
     burstiness = calculate_burstiness(upload_times)
     
+    # Upload regularity (how consistent are the intervals) - much more mild threshold
+    upload_regularity = 0.0
+    if len(upload_times) >= 3:
+        sorted_times = sorted(upload_times)
+        intervals = np.diff([t.timestamp() for t in sorted_times])
+        # Lower coefficient of variation = more regular
+        if np.mean(intervals) > 0:
+            upload_regularity = 1.0 / (1.0 + np.std(intervals) / np.mean(intervals))
+    
     # Spam association
     spam_record_cnt = user_records['is_spam_record'].sum()
+    spam_record_ratio = spam_record_cnt / n_records if n_records > 0 else 0.0
     
     return {
         'user_id': user_id,
         'n_records': n_records,
-        'zenodo_ratio': zenodo_ratio,
-        'n_external_prefixes': n_external_prefixes,
+        'external_doi_consistency': external_doi_consistency,
+        'unique_external_prefixes': unique_prefixes,
+        'no_repetitive_author_score': no_repetitive_author_score,
+        'author_intersection_ratio': author_intersection_ratio,
         'distinct_journal_title_cnt': distinct_journal_title_cnt,
+        'has_safe_community': has_safe_community,
         'same_comm_ratio': same_comm_ratio,
         'burstiness': burstiness,
+        'upload_regularity': upload_regularity,
         'spam_record_cnt': spam_record_cnt,
+        'spam_record_ratio': spam_record_ratio,
         'first_upload': upload_times.min() if len(upload_times) > 0 else None,
         'last_upload': upload_times.max() if len(upload_times) > 0 else None
     }
@@ -307,7 +387,7 @@ print("\nUser features saved to data/users.parquet")
 
 # Show top users by record count
 print("\nTop 10 users by record count:")
-print(users_df.nlargest(10, 'n_records')[['user_id', 'n_records', 'zenodo_ratio', 'spam_record_cnt']])
+print(users_df.nlargest(10, 'n_records')[['user_id', 'n_records', 'external_doi_consistency', 'spam_record_cnt']])
 # -
 
 # ## 6. Exploratory Data Analysis - Feature Distributions
@@ -324,35 +404,35 @@ axes[0].set_ylabel('Frequency')
 axes[0].set_title('Distribution of Records per User')
 axes[0].set_yscale('log')
 
-# 2. Zenodo DOI ratio
-axes[1].hist(users_df['zenodo_ratio'], bins=30, alpha=0.7, edgecolor='black')
-axes[1].set_xlabel('Zenodo DOI Ratio')
+# 2. External DOI consistency
+axes[1].hist(users_df['external_doi_consistency'], bins=30, alpha=0.7, edgecolor='black')
+axes[1].set_xlabel('External DOI Consistency')
 axes[1].set_ylabel('Frequency')
-axes[1].set_title('Distribution of Zenodo DOI Usage')
+axes[1].set_title('Distribution of External DOI Consistency')
 
-# 3. External prefixes
-axes[2].hist(users_df['n_external_prefixes'], bins=range(0, 10), alpha=0.7, edgecolor='black')
-axes[2].set_xlabel('Number of External DOI Prefixes')
+# 3. Author analysis - repetitive author score
+axes[2].hist(users_df['no_repetitive_author_score'], bins=30, alpha=0.7, edgecolor='black')
+axes[2].set_xlabel('Repetitive Author Score')
 axes[2].set_ylabel('Frequency')
-axes[2].set_title('Distribution of External DOI Prefixes')
+axes[2].set_title('Distribution of Repetitive Author Score')
 
-# 4. Journal title count
-axes[3].hist(users_df['distinct_journal_title_cnt'], bins=range(0, 20), alpha=0.7, edgecolor='black')
-axes[3].set_xlabel('Distinct Journal Titles')
+# 4. Author intersection ratio
+axes[3].hist(users_df['author_intersection_ratio'], bins=30, alpha=0.7, edgecolor='black')
+axes[3].set_xlabel('Author Intersection Ratio')
 axes[3].set_ylabel('Frequency')
-axes[3].set_title('Distribution of Distinct Journal Titles')
+axes[3].set_title('Distribution of Author Intersection Ratio')
 
-# 5. Community ratio
-axes[4].hist(users_df['same_comm_ratio'], bins=30, alpha=0.7, edgecolor='black')
-axes[4].set_xlabel('Most Common Community Ratio')
+# 5. Journal title count
+axes[4].hist(users_df['distinct_journal_title_cnt'], bins=range(0, 20), alpha=0.7, edgecolor='black')
+axes[4].set_xlabel('Distinct Journal Titles')
 axes[4].set_ylabel('Frequency')
-axes[4].set_title('Distribution of Community Dedication')
+axes[4].set_title('Distribution of Distinct Journal Titles')
 
-# 6. Burstiness
-axes[5].hist(users_df['burstiness'], bins=50, alpha=0.7, edgecolor='black')
-axes[5].set_xlabel('Burstiness (CV of Inter-upload Times)')
+# 6. Community ratio
+axes[5].hist(users_df['same_comm_ratio'], bins=30, alpha=0.7, edgecolor='black')
+axes[5].set_xlabel('Most Common Community Ratio')
 axes[5].set_ylabel('Frequency')
-axes[5].set_title('Distribution of Upload Burstiness')
+axes[5].set_title('Distribution of Community Dedication')
 
 plt.tight_layout()
 plt.savefig('figures/feature_distributions.png', dpi=300, bbox_inches='tight')
@@ -365,8 +445,9 @@ print("Feature distributions saved to figures/feature_distributions.png")
 
 # +
 # Select numeric features for correlation
-numeric_features = ['n_records', 'zenodo_ratio', 'n_external_prefixes', 
-                   'distinct_journal_title_cnt', 'same_comm_ratio', 'burstiness', 'spam_record_cnt']
+numeric_features = ['n_records', 'external_doi_consistency', 'no_repetitive_author_score', 
+                   'author_intersection_ratio', 'distinct_journal_title_cnt', 
+                   'same_comm_ratio', 'burstiness', 'upload_regularity', 'spam_record_cnt']
 
 # Create correlation matrix
 correlation_matrix = users_df[numeric_features].corr()
@@ -399,40 +480,40 @@ for feat1, feat2, corr in correlations[:10]:
 # ## 8. Scatter Plot Analysis
 
 # +
-# Create scatter plot: n_records vs zenodo_ratio
+# Create scatter plot: n_records vs external_doi_consistency
 plt.figure(figsize=(12, 8))
 
 # Color by spam record count
-scatter = plt.scatter(users_df['n_records'], users_df['zenodo_ratio'], 
+scatter = plt.scatter(users_df['n_records'], users_df['external_doi_consistency'], 
                      c=users_df['spam_record_cnt'], cmap='viridis', 
                      alpha=0.6, s=50)
 
 plt.xlabel('Number of Records')
-plt.ylabel('Zenodo DOI Ratio')
-plt.title('Records vs Zenodo DOI Usage (colored by spam count)')
+plt.ylabel('External DOI Consistency')
+plt.title('Records vs External DOI Consistency (colored by spam count)')
 plt.xscale('log')
 plt.colorbar(scatter, label='Spam Record Count')
 
 # Add threshold lines
-plt.axhline(y=CONFIG['zenodo_ratio_threshold'], color='red', linestyle='--', 
-           alpha=0.7, label=f'Zenodo ratio threshold ({CONFIG["zenodo_ratio_threshold"]})')
+plt.axhline(y=CONFIG['external_doi_consistency_threshold'], color='red', linestyle='--', 
+           alpha=0.7, label=f'External DOI consistency threshold ({CONFIG["external_doi_consistency_threshold"]})')
 plt.axvline(x=CONFIG['min_records_threshold'], color='red', linestyle='--', 
            alpha=0.7, label=f'Min records threshold ({CONFIG["min_records_threshold"]})')
 
 plt.legend()
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig('figures/records_vs_zenodo_ratio.png', dpi=300, bbox_inches='tight')
+plt.savefig('figures/records_vs_external_doi_consistency.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-print("Scatter plot saved to figures/records_vs_zenodo_ratio.png")
+print("Scatter plot saved to figures/records_vs_external_doi_consistency.png")
 # -
 
 # ## 9. Pair Plot for Key Features
 
 # +
 # Create pair plot for key features (sample for performance)
-key_features = ['n_records', 'zenodo_ratio', 'same_comm_ratio', 'spam_record_cnt']
+key_features = ['n_records', 'external_doi_consistency', 'no_repetitive_author_score', 'spam_record_cnt']
 sample_size = min(1000, len(users_df))
 sample_df = users_df.sample(n=sample_size, random_state=42)
 
@@ -495,7 +576,7 @@ for i, user_id in enumerate(top_users):
     
     # Show user stats
     user_stats = users_df[users_df['user_id'] == user_id].iloc[0]
-    print(f"  Records: {user_stats['n_records']}, Zenodo ratio: {user_stats['zenodo_ratio']:.2f}, "
+    print(f"  Records: {user_stats['n_records']}, External DOI consistency: {user_stats['external_doi_consistency']:.2f}, "
           f"Spam records: {user_stats['spam_record_cnt']}")
 # -
 
@@ -507,31 +588,23 @@ print("Applying journal runner detection heuristics...")
 
 candidates = users_df[
     (users_df['n_records'] >= CONFIG['min_records_threshold']) &
-    ((users_df['zenodo_ratio'] >= CONFIG['zenodo_ratio_threshold']) | 
-     (users_df['n_external_prefixes'] <= CONFIG['max_external_prefixes'])) &
-    (users_df['same_comm_ratio'] >= CONFIG['community_ratio_threshold'])
-].sort_values('zenodo_ratio', ascending=False)
+    (users_df['external_doi_consistency'] >= CONFIG['external_doi_consistency_threshold']) &
+    (users_df['upload_regularity'] >= CONFIG['min_upload_regularity']) &
+    (users_df['spam_record_ratio'] <= CONFIG['max_spam_ratio']) &
+    (~users_df['has_safe_community']) &  # Exclude users with safe communities
+    (users_df['no_repetitive_author_score'] >= CONFIG['repetitive_author_threshold'])  # High repetitive author score
+].sort_values('external_doi_consistency', ascending=False)
 
 print(f"\nFound {len(candidates)} users meeting journal runner criteria")
 print(f"Out of {len(users_df)} total users with >= {CONFIG['min_records_threshold']} records")
 
 # Display top candidates
 print("\nTop 20 Journal Runner Candidates:")
-display_columns = ['user_id', 'n_records', 'zenodo_ratio', 'n_external_prefixes', 
-                  'distinct_journal_title_cnt', 'same_comm_ratio', 'burstiness', 'spam_record_cnt']
+display_columns = ['user_id', 'n_records', 'external_doi_consistency', 'no_repetitive_author_score', 
+                  'author_intersection_ratio', 'upload_regularity', 'spam_record_ratio', 'burstiness']
 
-styled_candidates = candidates[display_columns].head(20).style\
-    .background_gradient(subset=['n_records'], cmap='YlOrRd')\
-    .background_gradient(subset=['zenodo_ratio'], cmap='Blues')\
-    .background_gradient(subset=['same_comm_ratio'], cmap='Greens')\
-    .format({
-        'zenodo_ratio': '{:.3f}',
-        'same_comm_ratio': '{:.3f}',
-        'burstiness': '{:.3f}'
-    })\
-    .set_caption('Top 20 Journal Runner Candidates (Highlighted by Feature Strength)')
-
-display(styled_candidates)
+# Print candidates table instead of using display
+print(candidates[display_columns].head(20).to_string(index=False))
 
 # Save candidates to CSV
 candidates.to_csv('data/journal_runner_candidates.csv', index=False)
@@ -557,22 +630,28 @@ print(f"   • Journal runner candidates: {candidate_count:,} ({candidate_count/
 
 print(f"\n🎯 DETECTION CRITERIA APPLIED:")
 print(f"   • Minimum records: {CONFIG['min_records_threshold']}")
-print(f"   • Zenodo DOI ratio threshold: {CONFIG['zenodo_ratio_threshold']}")
-print(f"   • Community dedication threshold: {CONFIG['community_ratio_threshold']}")
+print(f"   • External DOI consistency threshold: {CONFIG['external_doi_consistency_threshold']}")
 print(f"   • Max external prefixes: {CONFIG['max_external_prefixes']}")
+print(f"   • Min upload regularity: {CONFIG['min_upload_regularity']}")
+print(f"   • Max spam ratio: {CONFIG['max_spam_ratio']}")
+print(f"   • Min repetitive author score: {CONFIG['repetitive_author_threshold']}")
+print(f"   • Exclude safe communities: {CONFIG['safe_communities']}")
 
 print(f"\n📈 CANDIDATE CHARACTERISTICS:")
 if len(candidates) > 0:
     print(f"   • Average records per candidate: {candidates['n_records'].mean():.1f}")
-    print(f"   • Average Zenodo DOI ratio: {candidates['zenodo_ratio'].mean():.3f}")
+    print(f"   • Average External DOI consistency: {candidates['external_doi_consistency'].mean():.3f}")
+    print(f"   • Average repetitive author score: {candidates['no_repetitive_author_score'].mean():.3f}")
     print(f"   • Average community dedication: {candidates['same_comm_ratio'].mean():.3f}")
     print(f"   • Users with spam records: {len(candidates[candidates['spam_record_cnt'] > 0])} "
           f"({len(candidates[candidates['spam_record_cnt'] > 0])/len(candidates)*100:.1f}%)")
 
 print(f"\n🔍 KEY INSIGHTS:")
-print(f"   • {len(users_df[users_df['zenodo_ratio'] == 1.0]):,} users use exclusively Zenodo DOIs")
+print(f"   • {len(users_df[users_df['external_doi_consistency'] == 1.0]):,} users use exclusively external DOIs")
 print(f"   • {len(users_df[users_df['same_comm_ratio'] == 1.0]):,} users are dedicated to a single community")
 print(f"   • {len(users_df[users_df['spam_record_cnt'] > 0]):,} users have spam records associated")
+print(f"   • {len(users_df[users_df['has_safe_community']]):,} users have safe communities (independent users)")
+print(f"   • {len(users_df[users_df['no_repetitive_author_score'] >= 0.5]):,} users have high repetitive author scores (≥0.5)")
 
 print(f"\n💾 OUTPUT FILES GENERATED:")
 print(f"   • data/records.parquet - Processed record data")
