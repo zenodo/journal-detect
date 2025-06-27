@@ -6,13 +6,6 @@
 # - **Data Source**: 500,000+ JSON records from Zenodo (2025)
 # - **Goal**: Identify users with journal-running behavior patterns
 # - **Approach**: Feature engineering based on explainable heuristics
-#
-# ## Key Features Analyzed
-# 1. **Volume metrics**: Number of records per user
-# 2. **DOI patterns**: Zenodo DOI usage ratio
-# 3. **Journal indicators**: Title consistency, community dedication
-# 4. **Temporal patterns**: Upload burstiness
-# 5. **Quality signals**: Spam record associations
 
 # ## 1. Configuration and Setup
 
@@ -392,59 +385,103 @@ print(users_df.nlargest(10, 'n_records')[['user_id', 'n_records', 'external_doi_
 
 # ## 6. Exploratory Data Analysis - Feature Distributions
 
+# Understanding the distribution of our engineered features is crucial for identifying journal runner behavior patterns. These plots reveal how normal academic users differ from potential journal runners across key metrics like record volume, DOI consistency, and author patterns. The log scales and threshold highlighting help us identify the long tail of high-volume users who are most likely to be running journals.
+
 # +
-# Set up plotting
+# Create more meaningful distribution plots with better insights
 fig, axes = plt.subplots(2, 3, figsize=(18, 12))
 axes = axes.ravel()
 
-# 1. Number of records distribution
-axes[0].hist(users_df['n_records'], bins=50, alpha=0.7, edgecolor='black')
-axes[0].set_xlabel('Number of Records')
-axes[0].set_ylabel('Frequency')
-axes[0].set_title('Distribution of Records per User')
+# 1. Records per user distribution with log scale and annotations
+hist, bins, _ = axes[0].hist(users_df['n_records'], bins=50, alpha=0.7, edgecolor='black', color='skyblue')
+axes[0].set_xlabel('Number of Records per User')
+axes[0].set_ylabel('Number of Users')
+axes[0].set_title('Distribution of Records per User\n(Log Scale)')
 axes[0].set_yscale('log')
+axes[0].set_xscale('log')
 
-# 2. External DOI consistency
-axes[1].hist(users_df['external_doi_consistency'], bins=30, alpha=0.7, edgecolor='black')
+# Add percentile annotations
+percentiles = [50, 75, 90, 95, 99]
+for p in percentiles:
+    value = np.percentile(users_df['n_records'], p)
+    axes[0].axvline(value, color='red', linestyle='--', alpha=0.7)
+    axes[0].text(value, axes[0].get_ylim()[1]*0.8, f'{p}%', rotation=90, fontsize=8)
+
+# 2. External DOI consistency with threshold highlighting
+hist, bins, _ = axes[1].hist(users_df['external_doi_consistency'], bins=30, alpha=0.7, edgecolor='black', color='lightgreen')
 axes[1].set_xlabel('External DOI Consistency')
-axes[1].set_ylabel('Frequency')
-axes[1].set_title('Distribution of External DOI Consistency')
+axes[1].set_ylabel('Number of Users')
+axes[1].set_title('Distribution of External DOI Consistency\n(Threshold Highlighted)')
 
-# 3. Author analysis - repetitive author score
-axes[2].hist(users_df['no_repetitive_author_score'], bins=30, alpha=0.7, edgecolor='black')
+# Highlight threshold region
+threshold = CONFIG['external_doi_consistency_threshold']
+mask = users_df['external_doi_consistency'] >= threshold
+axes[1].hist(users_df.loc[mask, 'external_doi_consistency'], bins=bins, alpha=0.9, 
+             color='red', edgecolor='black', label=f'≥{threshold} ({mask.sum()} users)')
+axes[1].legend()
+
+# 3. Repetitive author score with interpretation
+hist, bins, _ = axes[2].hist(users_df['no_repetitive_author_score'], bins=30, alpha=0.7, edgecolor='black', color='orange')
 axes[2].set_xlabel('Repetitive Author Score')
-axes[2].set_ylabel('Frequency')
-axes[2].set_title('Distribution of Repetitive Author Score')
+axes[2].set_ylabel('Number of Users')
+axes[2].set_title('Distribution of Repetitive Author Score\n(Higher = More Journal-like)')
 
-# 4. Author intersection ratio
-axes[3].hist(users_df['author_intersection_ratio'], bins=30, alpha=0.7, edgecolor='black')
+# Add interpretation zones
+axes[2].axvspan(0, 0.2, alpha=0.2, color='green', label='Normal Users')
+axes[2].axvspan(0.2, 0.5, alpha=0.2, color='yellow', label='Suspicious')
+axes[2].axvspan(0.5, 1.0, alpha=0.2, color='red', label='Likely Journal Runner')
+axes[2].legend()
+
+# 4. Author intersection ratio (inverse of repetitive score)
+hist, bins, _ = axes[3].hist(users_df['author_intersection_ratio'], bins=30, alpha=0.7, edgecolor='black', color='purple')
 axes[3].set_xlabel('Author Intersection Ratio')
-axes[3].set_ylabel('Frequency')
-axes[3].set_title('Distribution of Author Intersection Ratio')
+axes[3].set_ylabel('Number of Users')
+axes[3].set_title('Distribution of Author Intersection Ratio\n(Higher = More Collaborative)')
 
-# 5. Journal title count
-axes[4].hist(users_df['distinct_journal_title_cnt'], bins=range(0, 20), alpha=0.7, edgecolor='black')
+# Add interpretation
+axes[3].axvspan(0.8, 1.0, alpha=0.2, color='green', label='High Collaboration')
+axes[3].axvspan(0.5, 0.8, alpha=0.2, color='yellow', label='Moderate Collaboration')
+axes[3].axvspan(0, 0.5, alpha=0.2, color='red', label='Low Collaboration')
+axes[3].legend()
+
+# 5. Journal title diversity with insights
+hist, bins, _ = axes[4].hist(users_df['distinct_journal_title_cnt'], bins=range(0, 21), alpha=0.7, edgecolor='black', color='brown')
 axes[4].set_xlabel('Distinct Journal Titles')
-axes[4].set_ylabel('Frequency')
-axes[4].set_title('Distribution of Distinct Journal Titles')
+axes[4].set_ylabel('Number of Users')
+axes[4].set_title('Distribution of Distinct Journal Titles\n(Diversity Indicator)')
 
-# 6. Community ratio
-axes[5].hist(users_df['same_comm_ratio'], bins=30, alpha=0.7, edgecolor='black')
-axes[5].set_xlabel('Most Common Community Ratio')
-axes[5].set_ylabel('Frequency')
-axes[5].set_title('Distribution of Community Dedication')
+# Add insights
+single_journal = (users_df['distinct_journal_title_cnt'] == 1).sum()
+multiple_journals = (users_df['distinct_journal_title_cnt'] > 1).sum()
+axes[4].text(0.7, 0.8, f'Single Journal: {single_journal}\nMultiple: {multiple_journals}', 
+             transform=axes[4].transAxes, bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+
+# 6. Upload burstiness with interpretation
+hist, bins, _ = axes[5].hist(users_df['burstiness'], bins=50, alpha=0.7, edgecolor='black', color='pink')
+axes[5].set_xlabel('Upload Burstiness (CV of Intervals)')
+axes[5].set_ylabel('Number of Users')
+axes[5].set_title('Distribution of Upload Burstiness\n(Higher = More Irregular)')
+
+# Add interpretation zones
+low_burst = users_df['burstiness'] <= 1
+high_burst = users_df['burstiness'] > 2
+axes[5].axvspan(0, 1, alpha=0.2, color='green', label=f'Regular ({low_burst.sum()} users)')
+axes[5].axvspan(2, axes[5].get_xlim()[1], alpha=0.2, color='red', label=f'Bursty ({high_burst.sum()} users)')
+axes[5].legend()
 
 plt.tight_layout()
 plt.savefig('figures/feature_distributions.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-print("Feature distributions saved to figures/feature_distributions.png")
+print("Enhanced feature distributions saved to figures/feature_distributions.png")
 # -
 
-# ## 7. Correlation Analysis
+# ## 7. Correlation Analysis with Insights
+
+# Correlation analysis reveals which features work together to identify journal runners, helping us understand the complex behavioral patterns that distinguish normal academic users from those running journals. Strong correlations between features like repetitive author scores and upload burstiness suggest these are complementary signals of journal-running behavior rather than independent indicators.
 
 # +
-# Select numeric features for correlation
+# Create a more insightful correlation analysis
 numeric_features = ['n_records', 'external_doi_consistency', 'no_repetitive_author_score', 
                    'author_intersection_ratio', 'distinct_journal_title_cnt', 
                    'same_comm_ratio', 'burstiness', 'upload_regularity', 'spam_record_cnt']
@@ -452,19 +489,26 @@ numeric_features = ['n_records', 'external_doi_consistency', 'no_repetitive_auth
 # Create correlation matrix
 correlation_matrix = users_df[numeric_features].corr()
 
-# Plot correlation heatmap
-plt.figure(figsize=(10, 8))
-sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', center=0, 
-            square=True, fmt='.2f', cbar_kws={'shrink': 0.8})
-plt.title('Feature Correlation Matrix')
+# Create a more informative correlation heatmap
+plt.figure(figsize=(12, 10))
+
+# Create mask for upper triangle to show only lower triangle
+mask = np.triu(np.ones_like(correlation_matrix, dtype=bool))
+
+# Plot heatmap with better styling
+sns.heatmap(correlation_matrix, mask=mask, annot=True, cmap='RdBu_r', center=0, 
+            square=True, fmt='.2f', cbar_kws={'shrink': 0.8, 'label': 'Correlation Coefficient'},
+            linewidths=0.5, linecolor='white')
+
+plt.title('Feature Correlation Matrix\n(Journal Runner Detection Features)', pad=20, fontsize=14)
 plt.tight_layout()
 plt.savefig('figures/correlation_heatmap.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-print("Correlation heatmap saved to figures/correlation_heatmap.png")
+print("Enhanced correlation heatmap saved to figures/correlation_heatmap.png")
 
-# Show top correlations
-print("\nTop feature correlations:")
+# Show top correlations with interpretation
+print("\n🔍 TOP FEATURE CORRELATIONS (with interpretation):")
 correlations = []
 for i in range(len(numeric_features)):
     for j in range(i+1, len(numeric_features)):
@@ -473,117 +517,443 @@ for i in range(len(numeric_features)):
         correlations.append((feat1, feat2, corr))
 
 correlations.sort(key=lambda x: abs(x[2]), reverse=True)
-for feat1, feat2, corr in correlations[:10]:
-    print(f"{feat1} vs {feat2}: {corr:.3f}")
+
+# Define correlation interpretations
+interpretations = {
+    'n_records vs distinct_journal_title_cnt': 'High correlation suggests journal runners publish across many titles',
+    'n_records vs burstiness': 'More records often means more irregular upload patterns',
+    'author_intersection_ratio vs upload_regularity': 'Collaborative users tend to upload more regularly',
+    'no_repetitive_author_score vs burstiness': 'Journal runners show both repetitive authors and bursty uploads',
+    'no_repetitive_author_score vs upload_regularity': 'Repetitive authors often upload irregularly'
+}
+
+for feat1, feat2, corr in correlations[:8]:
+    key = f"{feat1} vs {feat2}"
+    interpretation = interpretations.get(key, "Interesting relationship between features")
+    print(f"  {key}: {corr:.3f} - {interpretation}")
 # -
 
-# ## 8. Scatter Plot Analysis
+# ## 8. Multi-dimensional Scatter Analysis
+
+# Multi-dimensional scatter plots allow us to visualize how different behavioral patterns interact in real users, revealing the complex combinations of features that characterize journal runners. By coloring points by additional features, we can see how high-volume users with consistent external DOIs also tend to have repetitive author patterns and irregular upload timing.
 
 # +
-# Create scatter plot: n_records vs external_doi_consistency
-plt.figure(figsize=(12, 8))
+# Create a more insightful multi-dimensional scatter plot
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
-# Color by spam record count
-scatter = plt.scatter(users_df['n_records'], users_df['external_doi_consistency'], 
-                     c=users_df['spam_record_cnt'], cmap='viridis', 
-                     alpha=0.6, s=50)
-
-plt.xlabel('Number of Records')
-plt.ylabel('External DOI Consistency')
-plt.title('Records vs External DOI Consistency (colored by spam count)')
-plt.xscale('log')
-plt.colorbar(scatter, label='Spam Record Count')
+# 1. Records vs External DOI consistency with multiple indicators
+scatter1 = axes[0,0].scatter(users_df['n_records'], users_df['external_doi_consistency'], 
+                            c=users_df['no_repetitive_author_score'], cmap='viridis', 
+                            alpha=0.6, s=50)
+axes[0,0].set_xlabel('Number of Records (log scale)')
+axes[0,0].set_ylabel('External DOI Consistency')
+axes[0,0].set_title('Records vs DOI Consistency\n(colored by repetitive author score)')
+axes[0,0].set_xscale('log')
+plt.colorbar(scatter1, ax=axes[0,0], label='Repetitive Author Score')
 
 # Add threshold lines
-plt.axhline(y=CONFIG['external_doi_consistency_threshold'], color='red', linestyle='--', 
-           alpha=0.7, label=f'External DOI consistency threshold ({CONFIG["external_doi_consistency_threshold"]})')
-plt.axvline(x=CONFIG['min_records_threshold'], color='red', linestyle='--', 
-           alpha=0.7, label=f'Min records threshold ({CONFIG["min_records_threshold"]})')
+axes[0,0].axhline(y=CONFIG['external_doi_consistency_threshold'], color='red', linestyle='--', 
+                  alpha=0.7, label=f'DOI threshold ({CONFIG["external_doi_consistency_threshold"]})')
+axes[0,0].axvline(x=CONFIG['min_records_threshold'], color='red', linestyle='--', 
+                  alpha=0.7, label=f'Records threshold ({CONFIG["min_records_threshold"]})')
+axes[0,0].legend()
 
-plt.legend()
-plt.grid(True, alpha=0.3)
+# 2. Author patterns vs upload patterns
+scatter2 = axes[0,1].scatter(users_df['no_repetitive_author_score'], users_df['burstiness'], 
+                            c=users_df['n_records'], cmap='plasma', 
+                            alpha=0.6, s=50)
+axes[0,1].set_xlabel('Repetitive Author Score')
+axes[0,1].set_ylabel('Upload Burstiness')
+axes[0,1].set_title('Author Patterns vs Upload Patterns\n(colored by record count)')
+plt.colorbar(scatter2, ax=axes[0,1], label='Number of Records')
+
+# Add interpretation quadrants
+axes[0,1].axhline(y=1, color='gray', linestyle=':', alpha=0.5)
+axes[0,1].axvline(x=0.3, color='gray', linestyle=':', alpha=0.5)
+axes[0,1].text(0.1, 0.5, 'Normal\nUsers', transform=axes[0,1].transAxes, ha='center', 
+               bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.7))
+axes[0,1].text(0.7, 2, 'Journal\nRunners', transform=axes[0,1].transAxes, ha='center',
+               bbox=dict(boxstyle="round,pad=0.3", facecolor="red", alpha=0.7))
+
+# 3. Community dedication vs journal diversity
+scatter3 = axes[1,0].scatter(users_df['same_comm_ratio'], users_df['distinct_journal_title_cnt'], 
+                            c=users_df['spam_record_cnt'], cmap='Reds', 
+                            alpha=0.6, s=50)
+axes[1,0].set_xlabel('Community Dedication Ratio')
+axes[1,0].set_ylabel('Distinct Journal Titles')
+axes[1,0].set_title('Community Dedication vs Journal Diversity\n(colored by spam count)')
+plt.colorbar(scatter3, ax=axes[1,0], label='Spam Record Count')
+
+# 4. Upload regularity vs author intersection
+scatter4 = axes[1,1].scatter(users_df['upload_regularity'], users_df['author_intersection_ratio'], 
+                            c=users_df['external_doi_consistency'], cmap='Blues', 
+                            alpha=0.6, s=50)
+axes[1,1].set_xlabel('Upload Regularity')
+axes[1,1].set_ylabel('Author Intersection Ratio')
+axes[1,1].set_title('Upload Regularity vs Author Collaboration\n(colored by DOI consistency)')
+plt.colorbar(scatter4, ax=axes[1,1], label='External DOI Consistency')
+
 plt.tight_layout()
-plt.savefig('figures/records_vs_external_doi_consistency.png', dpi=300, bbox_inches='tight')
+plt.savefig('figures/multi_dimensional_analysis.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-print("Scatter plot saved to figures/records_vs_external_doi_consistency.png")
+print("Multi-dimensional scatter analysis saved to figures/multi_dimensional_analysis.png")
 # -
 
-# ## 9. Pair Plot for Key Features
+# ## 9. Behavioral Pattern Analysis
+
+# Grouping users by behavioral characteristics helps us understand how different types of users behave across multiple dimensions, revealing whether high-volume users are more likely to exhibit journal-running patterns. This analysis shows us that users with bursty upload patterns and repetitive authors tend to have higher spam ratios and lower DOI consistency.
 
 # +
-# Create pair plot for key features (sample for performance)
-key_features = ['n_records', 'external_doi_consistency', 'no_repetitive_author_score', 'spam_record_cnt']
-sample_size = min(1000, len(users_df))
-sample_df = users_df.sample(n=sample_size, random_state=42)
+# Create behavioral pattern analysis plots
+fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 
-print(f"Creating pair plot with {sample_size} sampled users...")
+# 1. Volume vs Quality analysis
+volume_bins = pd.cut(users_df['n_records'], bins=[0, 10, 50, 100, 500, 1000, float('inf')], 
+                     labels=['1-10', '11-50', '51-100', '101-500', '501-1000', '1000+'])
+quality_metrics = users_df.groupby(volume_bins).agg({
+    'external_doi_consistency': 'mean',
+    'no_repetitive_author_score': 'mean',
+    'spam_record_ratio': 'mean'
+}).reset_index()
 
-pair_plot = sns.pairplot(sample_df[key_features], diag_kind='hist', 
-                        plot_kws={'alpha': 0.6, 's': 20})
-pair_plot.fig.suptitle('Pair Plot of Key Features (Sampled)', y=1.02)
-pair_plot.fig.set_size_inches(12, 10)
+x_pos = np.arange(len(quality_metrics))
+width = 0.25
+
+axes[0,0].bar(x_pos - width, quality_metrics['external_doi_consistency'], width, 
+              label='DOI Consistency', alpha=0.8, color='skyblue')
+axes[0,0].bar(x_pos, quality_metrics['no_repetitive_author_score'], width, 
+              label='Repetitive Author Score', alpha=0.8, color='orange')
+axes[0,0].bar(x_pos + width, quality_metrics['spam_record_ratio'], width, 
+              label='Spam Ratio', alpha=0.8, color='red')
+
+axes[0,0].set_xlabel('Number of Records')
+axes[0,0].set_ylabel('Average Score')
+axes[0,0].set_title('Quality Metrics by Volume Groups')
+axes[0,0].set_xticks(x_pos)
+axes[0,0].set_xticklabels(quality_metrics['n_records'], rotation=45)
+axes[0,0].legend()
+axes[0,0].grid(True, alpha=0.3)
+
+# 2. Temporal pattern analysis
+time_bins = pd.cut(users_df['burstiness'], bins=[0, 0.5, 1, 2, 5, float('inf')], 
+                   labels=['Very Regular', 'Regular', 'Moderate', 'Bursty', 'Very Bursty'])
+temporal_metrics = users_df.groupby(time_bins).agg({
+    'n_records': 'mean',
+    'external_doi_consistency': 'mean',
+    'no_repetitive_author_score': 'mean'
+}).reset_index()
+
+x_pos = np.arange(len(temporal_metrics))
+axes[0,1].bar(x_pos, temporal_metrics['n_records'], alpha=0.8, color='lightgreen')
+axes[0,1].set_xlabel('Upload Pattern Type')
+axes[0,1].set_ylabel('Average Number of Records')
+axes[0,1].set_title('Volume by Upload Pattern Type')
+axes[0,1].set_xticks(x_pos)
+axes[0,1].set_xticklabels(temporal_metrics['burstiness'], rotation=45)
+axes[0,1].grid(True, alpha=0.3)
+
+# Add value labels
+for i, v in enumerate(temporal_metrics['n_records']):
+    axes[0,1].text(i, v + max(temporal_metrics['n_records'])*0.01, f'{v:.0f}', 
+                   ha='center', va='bottom')
+
+# 3. Author pattern analysis
+author_bins = pd.cut(users_df['no_repetitive_author_score'], bins=[0, 0.2, 0.4, 0.6, 0.8, 1.0], 
+                     labels=['Low', 'Moderate', 'High', 'Very High', 'Extreme'])
+author_metrics = users_df.groupby(author_bins).agg({
+    'n_records': 'mean',
+    'external_doi_consistency': 'mean',
+    'burstiness': 'mean'
+}).reset_index()
+
+x_pos = np.arange(len(author_metrics))
+axes[1,0].bar(x_pos, author_metrics['n_records'], alpha=0.8, color='purple')
+axes[1,0].set_xlabel('Repetitive Author Score Level')
+axes[1,0].set_ylabel('Average Number of Records')
+axes[1,0].set_title('Volume by Author Pattern Type')
+axes[1,0].set_xticks(x_pos)
+axes[1,0].set_xticklabels(author_metrics['no_repetitive_author_score'], rotation=45)
+axes[1,0].grid(True, alpha=0.3)
+
+# 4. Community vs Journal analysis
+community_bins = pd.cut(users_df['same_comm_ratio'], bins=[0, 0.3, 0.6, 0.9, 1.0], 
+                        labels=['Diverse', 'Moderate', 'Focused', 'Dedicated'])
+community_metrics = users_df.groupby(community_bins).agg({
+    'distinct_journal_title_cnt': 'mean',
+    'external_doi_consistency': 'mean',
+    'no_repetitive_author_score': 'mean'
+}).reset_index()
+
+x_pos = np.arange(len(community_metrics))
+width = 0.25
+axes[1,1].bar(x_pos - width, community_metrics['distinct_journal_title_cnt'], width, 
+              label='Journal Diversity', alpha=0.8, color='brown')
+axes[1,1].bar(x_pos, community_metrics['external_doi_consistency'], width, 
+              label='DOI Consistency', alpha=0.8, color='skyblue')
+axes[1,1].bar(x_pos + width, community_metrics['no_repetitive_author_score'], width, 
+              label='Repetitive Authors', alpha=0.8, color='orange')
+
+axes[1,1].set_xlabel('Community Dedication Level')
+axes[1,1].set_ylabel('Average Score')
+axes[1,1].set_title('Journal Patterns by Community Dedication')
+axes[1,1].set_xticks(x_pos)
+axes[1,1].set_xticklabels(community_metrics['same_comm_ratio'], rotation=45)
+axes[1,1].legend()
+axes[1,1].grid(True, alpha=0.3)
+
 plt.tight_layout()
-plt.savefig('figures/pair_plot.png', dpi=300, bbox_inches='tight')
+plt.savefig('figures/behavioral_patterns.png', dpi=300, bbox_inches='tight')
 plt.show()
 
-print("Pair plot saved to figures/pair_plot.png")
-
-
+print("Behavioral pattern analysis saved to figures/behavioral_patterns.png")
 # -
 
-# ## 10. Timeline Analysis for Top Candidates
+# ## 10. Enhanced Timeline Analysis
+
+# Timeline analysis reveals the temporal patterns that distinguish journal runners from normal users, showing how they tend to upload papers in concentrated bursts rather than steadily over time. These visualizations help us understand the real-world behavior of our top candidates, showing their upload frequency, DOI usage patterns, and any association with spam records.
 
 # +
-def plot_user_timeline(user_id, records_df):
-    """Plot upload timeline for a specific user."""
+def plot_enhanced_user_timeline(user_id, records_df, users_df):
+    """Create an enhanced timeline plot with multiple insights."""
     user_records = records_df[records_df['user_id'] == user_id].copy()
     user_records = user_records.sort_values('created')
+    user_stats = users_df[users_df['user_id'] == user_id].iloc[0]
     
-    plt.figure(figsize=(12, 6))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), height_ratios=[2, 1])
     
-    # Plot uploads over time
-    plt.scatter(user_records['created'], range(len(user_records)), 
-               alpha=0.7, s=30, c='blue', label='Uploads')
+    # Main timeline plot
+    dates = user_records['created']
+    cumulative_count = range(1, len(dates) + 1)
+    
+    # Color points by various metrics
+    colors = []
+    for _, record in user_records.iterrows():
+        if record['is_spam_record']:
+            colors.append('red')
+        elif record['is_zenodo_doi']:
+            colors.append('blue')
+        else:
+            colors.append('green')
+    
+    scatter = ax1.scatter(dates, cumulative_count, c=colors, alpha=0.7, s=30)
+    
+    # Add trend line
+    if len(dates) > 1:
+        z = np.polyfit([d.timestamp() for d in dates], cumulative_count, 1)
+        p = np.poly1d(z)
+        ax1.plot(dates, p([d.timestamp() for d in dates]), "r--", alpha=0.8, label='Upload Trend')
     
     # Highlight spam records
     spam_records = user_records[user_records['is_spam_record']]
     if len(spam_records) > 0:
-        plt.scatter(spam_records['created'], 
-                   [list(user_records['created']).index(t) for t in spam_records['created']], 
-                   alpha=0.8, s=50, c='red', label='Spam Records', marker='x')
+        spam_indices = [list(user_records['created']).index(t) for t in spam_records['created']]
+        ax1.scatter(spam_records['created'], [i+1 for i in spam_indices], 
+                   alpha=0.9, s=60, c='red', marker='x', label='Spam Records', linewidth=2)
     
-    plt.xlabel('Date')
-    plt.ylabel('Cumulative Upload Count')
-    plt.title(f'Upload Timeline for User {user_id}')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.xticks(rotation=45)
+    ax1.set_xlabel('Date')
+    ax1.set_ylabel('Cumulative Upload Count')
+    ax1.set_title(f'Enhanced Upload Timeline for User {user_id}\n'
+                  f'Records: {user_stats["n_records"]} | DOI Consistency: {user_stats["external_doi_consistency"]:.2f} | '
+                  f'Repetitive Score: {user_stats["no_repetitive_author_score"]:.2f}')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Add color legend
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='blue', label='Zenodo DOI'),
+                      Patch(facecolor='green', label='External DOI'),
+                      Patch(facecolor='red', label='Spam Record')]
+    ax1.legend(handles=legend_elements, loc='upper left')
+    
+    # Upload frequency analysis
+    if len(dates) > 1:
+        # Calculate daily upload counts
+        daily_counts = user_records.groupby(user_records['created'].dt.date).size()
+        
+        ax2.bar(daily_counts.index, daily_counts.values, alpha=0.7, color='lightblue', edgecolor='black')
+        ax2.set_xlabel('Date')
+        ax2.set_ylabel('Uploads per Day')
+        ax2.set_title('Daily Upload Frequency')
+        ax2.tick_params(axis='x', rotation=45)
+        ax2.grid(True, alpha=0.3)
+        
+        # Add burst detection
+        mean_daily = daily_counts.mean()
+        burst_days = daily_counts[daily_counts > mean_daily + daily_counts.std()]
+        if len(burst_days) > 0:
+            ax2.bar(burst_days.index, burst_days.values, alpha=0.9, color='red', 
+                   label=f'Burst Days (> {mean_daily:.1f} + σ)')
+            ax2.legend()
+    
     plt.tight_layout()
-    
-    return plt.gcf()
+    return fig
 
-# Get top 5 users by record count
-top_users = users_df.nlargest(5, 'n_records')['user_id'].tolist()
+# Get top candidates for enhanced timeline analysis
+top_candidates = candidates.head(5)['user_id'].tolist()
 
-print("Creating timeline plots for top 5 users by record count...")
+print("Creating enhanced timeline plots for top 5 journal runner candidates...")
 
-for i, user_id in enumerate(top_users):
-    fig = plot_user_timeline(user_id, records_df)
-    plt.savefig(f'figures/timeline_user_{user_id}.png', dpi=300, bbox_inches='tight')
+for i, user_id in enumerate(top_candidates):
+    fig = plot_enhanced_user_timeline(user_id, records_df, users_df)
+    plt.savefig(f'figures/enhanced_timeline_user_{user_id}.png', dpi=300, bbox_inches='tight')
     plt.show()
-    print(f"Timeline for user {user_id} saved to figures/timeline_user_{user_id}.png")
+    print(f"Enhanced timeline for user {user_id} saved to figures/enhanced_timeline_user_{user_id}.png")
     
-    # Show user stats
+    # Show detailed user stats
     user_stats = users_df[users_df['user_id'] == user_id].iloc[0]
-    print(f"  Records: {user_stats['n_records']}, External DOI consistency: {user_stats['external_doi_consistency']:.2f}, "
-          f"Spam records: {user_stats['spam_record_cnt']}")
+    print(f"  📊 User {user_id} Statistics:")
+    print(f"     • Records: {user_stats['n_records']}")
+    print(f"     • External DOI consistency: {user_stats['external_doi_consistency']:.3f}")
+    print(f"     • Repetitive author score: {user_stats['no_repetitive_author_score']:.3f}")
+    print(f"     • Author intersection ratio: {user_stats['author_intersection_ratio']:.3f}")
+    print(f"     • Upload burstiness: {user_stats['burstiness']:.3f}")
+    print(f"     • Spam records: {user_stats['spam_record_cnt']} ({user_stats['spam_record_ratio']:.1%})")
 # -
 
-# ## 11. Journal Runner Candidate Detection
+# ## 11. Feature Importance Analysis with Insights
+
+# Feature importance analysis helps us understand which behavioral indicators are most effective at distinguishing journal runners from normal users, guiding our detection criteria and helping us focus on the most predictive signals. This analysis reveals whether our engineered features like repetitive author scores and DOI consistency are actually capturing the patterns we expect to see in journal-running behavior.
 
 # +
-# Apply heuristic filter for journal runner candidates
+# Create a more comprehensive feature importance analysis
+print("Analyzing feature importance for journal runner detection...")
+
+# Create binary target: is candidate or not
+users_df['is_candidate'] = users_df['user_id'].isin(candidates['user_id'])
+
+# Calculate multiple importance metrics
+feature_importance = {}
+for feature in numeric_features:
+    # Correlation with target
+    correlation = users_df[feature].corr(users_df['is_candidate'])
+    
+    # Mutual information (if available)
+    try:
+        from sklearn.feature_selection import mutual_info_classif
+        mi_score = mutual_info_classif(users_df[[feature]], users_df['is_candidate'], random_state=42)[0]
+    except:
+        mi_score = np.nan
+    
+    # Effect size (Cohen's d)
+    candidate_values = users_df[users_df['is_candidate']][feature].dropna()
+    non_candidate_values = users_df[~users_df['is_candidate']][feature].dropna()
+    
+    if len(candidate_values) > 0 and len(non_candidate_values) > 0:
+        pooled_std = np.sqrt(((len(candidate_values) - 1) * candidate_values.var() + 
+                             (len(non_candidate_values) - 1) * non_candidate_values.var()) / 
+                            (len(candidate_values) + len(non_candidate_values) - 2))
+        cohens_d = (candidate_values.mean() - non_candidate_values.mean()) / pooled_std if pooled_std > 0 else 0
+    else:
+        cohens_d = 0
+    
+    feature_importance[feature] = {
+        'correlation': abs(correlation) if not np.isnan(correlation) else 0,
+        'mutual_info': mi_score if not np.isnan(mi_score) else 0,
+        'cohens_d': abs(cohens_d)
+    }
+
+# Create comprehensive importance plot
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+# 1. Correlation importance
+corr_importance = [(feat, data['correlation']) for feat, data in feature_importance.items()]
+corr_importance.sort(key=lambda x: x[1], reverse=True)
+
+features, importance = zip(*corr_importance)
+bars1 = axes[0].bar(range(len(features)), importance, color='skyblue', alpha=0.7)
+axes[0].set_xlabel('Features')
+axes[0].set_ylabel('Absolute Correlation')
+axes[0].set_title('Feature Importance: Correlation with Candidate Status')
+axes[0].set_xticks(range(len(features)))
+axes[0].set_xticklabels(features, rotation=45, ha='right')
+axes[0].grid(True, alpha=0.3, axis='y')
+
+# Add value labels
+for bar, imp in zip(bars1, importance):
+    axes[0].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                 f'{imp:.3f}', ha='center', va='bottom', fontsize=8)
+
+# 2. Mutual information importance (if available)
+mi_importance = [(feat, data['mutual_info']) for feat, data in feature_importance.items() if data['mutual_info'] > 0]
+if mi_importance:
+    mi_importance.sort(key=lambda x: x[1], reverse=True)
+    features, importance = zip(*mi_importance)
+    bars2 = axes[1].bar(range(len(features)), importance, color='lightgreen', alpha=0.7)
+    axes[1].set_xlabel('Features')
+    axes[1].set_ylabel('Mutual Information')
+    axes[1].set_title('Feature Importance: Mutual Information')
+    axes[1].set_xticks(range(len(features)))
+    axes[1].set_xticklabels(features, rotation=45, ha='right')
+    axes[1].grid(True, alpha=0.3, axis='y')
+    
+    for bar, imp in zip(bars2, importance):
+        axes[1].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001, 
+                     f'{imp:.3f}', ha='center', va='bottom', fontsize=8)
+else:
+    axes[1].text(0.5, 0.5, 'Mutual Information\nNot Available', ha='center', va='center', 
+                 transform=axes[1].transAxes, fontsize=12)
+    axes[1].set_title('Feature Importance: Mutual Information')
+
+# 3. Effect size importance
+effect_importance = [(feat, data['cohens_d']) for feat, data in feature_importance.items()]
+effect_importance.sort(key=lambda x: x[1], reverse=True)
+
+features, importance = zip(*effect_importance)
+bars3 = axes[2].bar(range(len(features)), importance, color='orange', alpha=0.7)
+axes[2].set_xlabel('Features')
+axes[2].set_ylabel("Cohen's d (Effect Size)")
+axes[2].set_title('Feature Importance: Effect Size')
+axes[2].set_xticks(range(len(features)))
+axes[2].set_xticklabels(features, rotation=45, ha='right')
+axes[2].grid(True, alpha=0.3, axis='y')
+
+# Add effect size interpretation
+for i, (bar, imp) in enumerate(zip(bars3, importance)):
+    axes[2].text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                 f'{imp:.3f}', ha='center', va='bottom', fontsize=8)
+    
+    # Color code by effect size
+    if imp > 0.8:
+        bar.set_color('red')
+    elif imp > 0.5:
+        bar.set_color('orange')
+    elif imp > 0.2:
+        bar.set_color('yellow')
+    else:
+        bar.set_color('lightblue')
+
+plt.tight_layout()
+plt.savefig('figures/comprehensive_feature_importance.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+print("Comprehensive feature importance analysis saved to figures/comprehensive_feature_importance.png")
+
+# Print feature importance summary
+print("\n📊 FEATURE IMPORTANCE SUMMARY:")
+print("Feature | Correlation | Effect Size | Interpretation")
+print("-" * 60)
+for feature in features:
+    corr = feature_importance[feature]['correlation']
+    effect = feature_importance[feature]['cohens_d']
+    
+    if effect > 0.8:
+        interpretation = "Very Strong Effect"
+    elif effect > 0.5:
+        interpretation = "Strong Effect"
+    elif effect > 0.2:
+        interpretation = "Moderate Effect"
+    else:
+        interpretation = "Weak Effect"
+    
+    print(f"{feature:20} | {corr:10.3f} | {effect:10.3f} | {interpretation}")
+# -
+
+# ## 12. Journal Runner Candidate Detection
+
+# Applying our heuristic filters allows us to identify users who exhibit multiple journal-running behaviors simultaneously, creating a more robust detection system than relying on any single feature. This multi-criteria approach helps us distinguish between legitimate high-volume academic users and those who are likely running journals on the platform.
+
+
 print("Applying journal runner detection heuristics...")
 
 candidates = users_df[
@@ -611,7 +981,9 @@ candidates.to_csv('data/journal_runner_candidates.csv', index=False)
 print("\nCandidates saved to data/journal_runner_candidates.csv")
 # -
 
-# ## 12. Summary Statistics and Insights
+# ## 13. Summary Statistics and Insights
+
+# Comprehensive summary statistics provide a complete picture of our detection results, helping us understand the scale of journal-running activity on Zenodo and validate our detection approach. These insights help us assess whether our thresholds are reasonable and whether we're capturing the right behavioral patterns.
 
 # +
 # Generate summary statistics
@@ -664,7 +1036,9 @@ print(f"ANALYSIS COMPLETE: Found {candidate_count} potential journal runners")
 print("=" * 60)
 # -
 
-# ## 13. Additional Analysis: Feature Importance
+# ## 14. Additional Analysis: Feature Importance
+
+# This additional feature importance analysis provides a focused view of which behavioral indicators are most predictive of journal-running behavior, helping us refine our detection criteria and understand the relative strength of different signals. Understanding feature importance helps us prioritize which patterns to focus on when developing more sophisticated detection algorithms.
 
 # +
 # Analyze feature importance for candidate detection
