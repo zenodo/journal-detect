@@ -600,114 +600,35 @@ plt.show()
 print("Multi-dimensional scatter analysis saved to figures/multi_dimensional_analysis.png")
 # -
 
-# ## 9. Behavioral Pattern Analysis
+# ## 9. Journal Runner Candidate Detection
 
-# Grouping users by behavioral characteristics helps us understand how different types of users behave across multiple dimensions, revealing whether high-volume users are more likely to exhibit journal-running patterns. This analysis shows us that users with bursty upload patterns and repetitive authors tend to have higher spam ratios and lower DOI consistency.
+# Applying our heuristic filters allows us to identify users who exhibit multiple journal-running behaviors simultaneously, creating a more robust detection system than relying on any single feature. This multi-criteria approach helps us distinguish between legitimate high-volume academic users and those who are likely running journals on the platform.
 
-# +
-# Create behavioral pattern analysis plots
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+print("Applying journal runner detection heuristics...")
 
-# 1. Volume vs Quality analysis
-volume_bins = pd.cut(users_df['n_records'], bins=[0, 10, 50, 100, 500, 1000, float('inf')], 
-                     labels=['1-10', '11-50', '51-100', '101-500', '501-1000', '1000+'])
-quality_metrics = users_df.groupby(volume_bins).agg({
-    'external_doi_consistency': 'mean',
-    'no_repetitive_author_score': 'mean',
-    'spam_record_ratio': 'mean'
-}).reset_index()
+candidates = users_df[
+    (users_df['n_records'] >= CONFIG['min_records_threshold']) &
+    (users_df['external_doi_consistency'] >= CONFIG['external_doi_consistency_threshold']) &
+    (users_df['upload_regularity'] >= CONFIG['min_upload_regularity']) &
+    (users_df['spam_record_ratio'] <= CONFIG['max_spam_ratio']) &
+    (~users_df['has_safe_community']) &  # Exclude users with safe communities
+    (users_df['no_repetitive_author_score'] >= CONFIG['repetitive_author_threshold'])  # High repetitive author score
+].sort_values('external_doi_consistency', ascending=False)
 
-x_pos = np.arange(len(quality_metrics))
-width = 0.25
+print(f"\nFound {len(candidates)} users meeting journal runner criteria")
+print(f"Out of {len(users_df)} total users with >= {CONFIG['min_records_threshold']} records")
 
-axes[0,0].bar(x_pos - width, quality_metrics['external_doi_consistency'], width, 
-              label='DOI Consistency', alpha=0.8, color='skyblue')
-axes[0,0].bar(x_pos, quality_metrics['no_repetitive_author_score'], width, 
-              label='Repetitive Author Score', alpha=0.8, color='orange')
-axes[0,0].bar(x_pos + width, quality_metrics['spam_record_ratio'], width, 
-              label='Spam Ratio', alpha=0.8, color='red')
+# Display top candidates
+print("\nTop 20 Journal Runner Candidates:")
+display_columns = ['user_id', 'n_records', 'external_doi_consistency', 'no_repetitive_author_score', 
+                  'author_intersection_ratio', 'upload_regularity', 'spam_record_ratio', 'burstiness']
 
-axes[0,0].set_xlabel('Number of Records')
-axes[0,0].set_ylabel('Average Score')
-axes[0,0].set_title('Quality Metrics by Volume Groups')
-axes[0,0].set_xticks(x_pos)
-axes[0,0].set_xticklabels(quality_metrics['n_records'], rotation=45)
-axes[0,0].legend()
-axes[0,0].grid(True, alpha=0.3)
+# Print candidates table instead of using display
+print(candidates[display_columns].head(20).to_string(index=False))
 
-# 2. Temporal pattern analysis
-time_bins = pd.cut(users_df['burstiness'], bins=[0, 0.5, 1, 2, 5, float('inf')], 
-                   labels=['Very Regular', 'Regular', 'Moderate', 'Bursty', 'Very Bursty'])
-temporal_metrics = users_df.groupby(time_bins).agg({
-    'n_records': 'mean',
-    'external_doi_consistency': 'mean',
-    'no_repetitive_author_score': 'mean'
-}).reset_index()
-
-x_pos = np.arange(len(temporal_metrics))
-axes[0,1].bar(x_pos, temporal_metrics['n_records'], alpha=0.8, color='lightgreen')
-axes[0,1].set_xlabel('Upload Pattern Type')
-axes[0,1].set_ylabel('Average Number of Records')
-axes[0,1].set_title('Volume by Upload Pattern Type')
-axes[0,1].set_xticks(x_pos)
-axes[0,1].set_xticklabels(temporal_metrics['burstiness'], rotation=45)
-axes[0,1].grid(True, alpha=0.3)
-
-# Add value labels
-for i, v in enumerate(temporal_metrics['n_records']):
-    axes[0,1].text(i, v + max(temporal_metrics['n_records'])*0.01, f'{v:.0f}', 
-                   ha='center', va='bottom')
-
-# 3. Author pattern analysis
-author_bins = pd.cut(users_df['no_repetitive_author_score'], bins=[0, 0.2, 0.4, 0.6, 0.8, 1.0], 
-                     labels=['Low', 'Moderate', 'High', 'Very High', 'Extreme'])
-author_metrics = users_df.groupby(author_bins).agg({
-    'n_records': 'mean',
-    'external_doi_consistency': 'mean',
-    'burstiness': 'mean'
-}).reset_index()
-
-x_pos = np.arange(len(author_metrics))
-axes[1,0].bar(x_pos, author_metrics['n_records'], alpha=0.8, color='purple')
-axes[1,0].set_xlabel('Repetitive Author Score Level')
-axes[1,0].set_ylabel('Average Number of Records')
-axes[1,0].set_title('Volume by Author Pattern Type')
-axes[1,0].set_xticks(x_pos)
-axes[1,0].set_xticklabels(author_metrics['no_repetitive_author_score'], rotation=45)
-axes[1,0].grid(True, alpha=0.3)
-
-# 4. Community vs Journal analysis
-community_bins = pd.cut(users_df['same_comm_ratio'], bins=[0, 0.3, 0.6, 0.9, 1.0], 
-                        labels=['Diverse', 'Moderate', 'Focused', 'Dedicated'])
-community_metrics = users_df.groupby(community_bins).agg({
-    'distinct_journal_title_cnt': 'mean',
-    'external_doi_consistency': 'mean',
-    'no_repetitive_author_score': 'mean'
-}).reset_index()
-
-x_pos = np.arange(len(community_metrics))
-width = 0.25
-axes[1,1].bar(x_pos - width, community_metrics['distinct_journal_title_cnt'], width, 
-              label='Journal Diversity', alpha=0.8, color='brown')
-axes[1,1].bar(x_pos, community_metrics['external_doi_consistency'], width, 
-              label='DOI Consistency', alpha=0.8, color='skyblue')
-axes[1,1].bar(x_pos + width, community_metrics['no_repetitive_author_score'], width, 
-              label='Repetitive Authors', alpha=0.8, color='orange')
-
-axes[1,1].set_xlabel('Community Dedication Level')
-axes[1,1].set_ylabel('Average Score')
-axes[1,1].set_title('Journal Patterns by Community Dedication')
-axes[1,1].set_xticks(x_pos)
-axes[1,1].set_xticklabels(community_metrics['same_comm_ratio'], rotation=45)
-axes[1,1].legend()
-axes[1,1].grid(True, alpha=0.3)
-
-plt.tight_layout()
-plt.savefig('figures/behavioral_patterns.png', dpi=300, bbox_inches='tight')
-plt.show()
-
-print("Behavioral pattern analysis saved to figures/behavioral_patterns.png")
-# -
+# Save candidates to CSV
+candidates.to_csv('data/journal_runner_candidates.csv', index=False)
+print("\nCandidates saved to data/journal_runner_candidates.csv")
 
 # ## 10. Enhanced Timeline Analysis
 
@@ -809,7 +730,6 @@ for i, user_id in enumerate(top_candidates):
     print(f"     • Author intersection ratio: {user_stats['author_intersection_ratio']:.3f}")
     print(f"     • Upload burstiness: {user_stats['burstiness']:.3f}")
     print(f"     • Spam records: {user_stats['spam_record_cnt']} ({user_stats['spam_record_ratio']:.1%})")
-# -
 
 # ## 11. Feature Importance Analysis with Insights
 
@@ -947,41 +867,8 @@ for feature in features:
         interpretation = "Weak Effect"
     
     print(f"{feature:20} | {corr:10.3f} | {effect:10.3f} | {interpretation}")
-# -
 
-# ## 12. Journal Runner Candidate Detection
-
-# Applying our heuristic filters allows us to identify users who exhibit multiple journal-running behaviors simultaneously, creating a more robust detection system than relying on any single feature. This multi-criteria approach helps us distinguish between legitimate high-volume academic users and those who are likely running journals on the platform.
-
-
-print("Applying journal runner detection heuristics...")
-
-candidates = users_df[
-    (users_df['n_records'] >= CONFIG['min_records_threshold']) &
-    (users_df['external_doi_consistency'] >= CONFIG['external_doi_consistency_threshold']) &
-    (users_df['upload_regularity'] >= CONFIG['min_upload_regularity']) &
-    (users_df['spam_record_ratio'] <= CONFIG['max_spam_ratio']) &
-    (~users_df['has_safe_community']) &  # Exclude users with safe communities
-    (users_df['no_repetitive_author_score'] >= CONFIG['repetitive_author_threshold'])  # High repetitive author score
-].sort_values('external_doi_consistency', ascending=False)
-
-print(f"\nFound {len(candidates)} users meeting journal runner criteria")
-print(f"Out of {len(users_df)} total users with >= {CONFIG['min_records_threshold']} records")
-
-# Display top candidates
-print("\nTop 20 Journal Runner Candidates:")
-display_columns = ['user_id', 'n_records', 'external_doi_consistency', 'no_repetitive_author_score', 
-                  'author_intersection_ratio', 'upload_regularity', 'spam_record_ratio', 'burstiness']
-
-# Print candidates table instead of using display
-print(candidates[display_columns].head(20).to_string(index=False))
-
-# Save candidates to CSV
-candidates.to_csv('data/journal_runner_candidates.csv', index=False)
-print("\nCandidates saved to data/journal_runner_candidates.csv")
-# -
-
-# ## 13. Summary Statistics and Insights
+# ## 12. Summary Statistics and Insights
 
 # Comprehensive summary statistics provide a complete picture of our detection results, helping us understand the scale of journal-running activity on Zenodo and validate our detection approach. These insights help us assess whether our thresholds are reasonable and whether we're capturing the right behavioral patterns.
 
@@ -1034,9 +921,8 @@ print(f"   • figures/ - Visualization plots")
 print(f"\n" + "=" * 60)
 print(f"ANALYSIS COMPLETE: Found {candidate_count} potential journal runners")
 print("=" * 60)
-# -
 
-# ## 14. Additional Analysis: Feature Importance
+# ## 13. Additional Analysis: Feature Importance
 
 # This additional feature importance analysis provides a focused view of which behavioral indicators are most predictive of journal-running behavior, helping us refine our detection criteria and understand the relative strength of different signals. Understanding feature importance helps us prioritize which patterns to focus on when developing more sophisticated detection algorithms.
 
