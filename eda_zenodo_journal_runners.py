@@ -16,6 +16,7 @@ import json
 import glob
 from datetime import datetime
 from collections import defaultdict
+from dataclasses import dataclass
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -43,25 +44,27 @@ rcParams['font.size'] = 10
 os.makedirs('figures', exist_ok=True)
 os.makedirs('data', exist_ok=True)
 
-# Configuration parameters
-CONFIG = {
-    'json_dir': 'records-json-2025',
-    'spam_file': 'records-deleted-2025.csv',
-    'sample_size': None,  # Set to number for sampling, None for full dataset
-    'chunk_size': 1000,   # Process files in chunks
-    'min_records_threshold': 20,
-    'external_doi_consistency_threshold': 0.7,  # 70% of external DOIs use same prefix
-    'max_external_prefixes': 3,  # Max unique external DOI prefixes
-    'min_upload_regularity': 0.1,  # Much more mild upload regularity threshold (was 0.3)
-    'max_spam_ratio': 0.1,  # Max 10% spam records
+@dataclass
+class AnalysisConfig:
+    """Configuration parameters for journal runner detection analysis."""
+    json_dir: str = 'records-json-2025'
+    spam_file: str = 'records-deleted-2025.csv'
+    sample_size: int = None  # Set to number for sampling, None for full dataset
+    chunk_size: int = 1000   # Process files in chunks
+    min_records_threshold: int = 20
+    external_doi_consistency_threshold: float = 0.7  # 70% of external DOIs use same prefix
+    max_external_prefixes: int = 3  # Max unique external DOI prefixes
+    min_upload_regularity: float = 0.1  # Much more mild upload regularity threshold (was 0.3)
+    max_spam_ratio: float = 0.1  # Max 10% spam records
     # Safe communities that indicate independent users (not journal runners)
-    'safe_communities': ['eu', 'biosyslit'],  # EU Open Research Repository and Biodiversity Literature Repository
-    'repetitive_author_threshold': 0.3,  # If 30% of entries have no author intersection, likely journal runner
-    'min_author_intersection_ratio': 0.2  # Minimum ratio of entries that share at least one author
-}
+    safe_communities: tuple = ('eu', 'biosyslit')  # EU Open Research Repository and Biodiversity Literature Repository
+    repetitive_author_threshold: float = 0.3  # If 30% of entries have no author intersection, likely journal runner
+    min_author_intersection_ratio: float = 0.2  # Minimum ratio of entries that share at least one author
 
-print(f"Configuration loaded. Processing directory: {CONFIG['json_dir']}")
-print(f"Spam records file: {CONFIG['spam_file']}")
+CONFIG = AnalysisConfig()
+
+print(f"Configuration loaded. Processing directory: {CONFIG.json_dir}")
+print(f"Spam records file: {CONFIG.spam_file}")
 
 
 # -
@@ -97,20 +100,20 @@ def extract_record_features(record):
         
         # Journal info
         journal_title = None
-        if 'custom_fields' in record and \
-           'journal:journal' in record['custom_fields']:
-            journal_title = record['custom_fields']['journal:journal'].get('title')
+        custom_fields = record.get('custom_fields', {})
+        if 'journal:journal' in custom_fields:
+            journal_title = custom_fields['journal:journal'].get('title')
         
         # Author analysis - extract all author names from the full author list
         creators = record.get('metadata', {}).get('creators', [])
         n_authors = len(creators) if creators else 0
         
         # Extract all author names for intersection analysis
-        author_names = []
-        if creators:
-            for creator in creators:
-                if 'person_or_org' in creator and 'name' in creator['person_or_org']:
-                    author_names.append(creator['person_or_org']['name'])
+        author_names = [
+            creator['person_or_org']['name']
+            for creator in creators
+            if creator.get('person_or_org', {}).get('name')
+        ]
         
         # Title analysis
         title = record.get('metadata', {}).get('title', '')
@@ -118,16 +121,23 @@ def extract_record_features(record):
         # Community info - check both main record and parent, extract slug
         communities = []
         community_slugs = []
+        
+        # Get communities from main record
         if 'communities' in record and 'ids' in record['communities']:
             communities = record['communities']['ids']
+        
+        # Get communities from parent if not in main record
         elif 'parent' in record and 'communities' in record['parent'] and 'ids' in record['parent']['communities']:
             communities = record['parent']['communities']['ids']
         
         # Extract community slugs
-        if 'parent' in record and 'communities' in record['parent'] and 'entries' in record['parent']['communities']:
-            for entry in record['parent']['communities']['entries']:
-                if 'slug' in entry:
-                    community_slugs.append(entry['slug'])
+        parent_communities = record.get('parent', {}).get('communities', {})
+        if 'entries' in parent_communities:
+            community_slugs = [
+                entry['slug'] 
+                for entry in parent_communities['entries'] 
+                if 'slug' in entry
+            ]
         
         # File info
         file_count = record.get('files', {}).get('count', 0)
@@ -167,8 +177,11 @@ def load_records_generator(json_dir, sample_size=None):
                 features = extract_record_features(record)
                 if features:
                     yield features
-        except Exception as e:
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
             print(f"Error reading {filepath}: {e}")
+            continue
+        except Exception as e:
+            print(f"Unexpected error processing {filepath}: {e}")
             continue
 
 def load_records_to_dataframe(json_dir, sample_size=None):
@@ -200,11 +213,11 @@ def load_records_to_dataframe(json_dir, sample_size=None):
 
 # +
 # Load spam records
-spam_df = load_spam_records(CONFIG['spam_file'])
+spam_df = load_spam_records(CONFIG.spam_file)
 spam_record_ids = set(spam_df['record_id'].astype(str))
 
 # Load main records
-records_df = load_records_to_dataframe(CONFIG['json_dir'], CONFIG['sample_size'])
+records_df = load_records_to_dataframe(CONFIG.json_dir, CONFIG.sample_size)
 
 # Add spam flag
 records_df['is_spam_record'] = records_df['record_id'].astype(str).isin(spam_record_ids)
@@ -245,12 +258,20 @@ def calculate_burstiness(upload_times):
     sorted_times = sorted(upload_times)
     intervals = np.diff([t.timestamp() for t in sorted_times])
     
-    if len(intervals) == 0 or np.std(intervals) == 0:
+    # Handle edge cases
+    if len(intervals) == 0:
+        return 0.0
+    
+    mean_interval = np.mean(intervals)
+    if mean_interval == 0:
+        return 0.0
+    
+    std_interval = np.std(intervals)
+    if std_interval == 0:
         return 0.0
     
     # Coefficient of variation
-    cv = np.std(intervals) / np.mean(intervals)
-    return cv
+    return std_interval / mean_interval
 
 def extract_user_features(user_records):
     """Extract features for a single user from their records."""
@@ -302,7 +323,7 @@ def extract_user_features(user_records):
             all_community_slugs.extend(community_slugs)
     
     # Check if user has any safe communities (indicates independent user)
-    has_safe_community = any(slug in CONFIG['safe_communities'] for slug in all_community_slugs)
+    has_safe_community = any(slug in CONFIG.safe_communities for slug in all_community_slugs)
     
     # Community dedication ratio (kept as feature but no threshold)
     if all_community_slugs:
@@ -322,8 +343,10 @@ def extract_user_features(user_records):
         sorted_times = sorted(upload_times)
         intervals = np.diff([t.timestamp() for t in sorted_times])
         # Lower coefficient of variation = more regular
-        if np.mean(intervals) > 0:
-            upload_regularity = 1.0 / (1.0 + np.std(intervals) / np.mean(intervals))
+        mean_interval = np.mean(intervals)
+        if mean_interval > 0:
+            std_interval = np.std(intervals)
+            upload_regularity = 1.0 / (1.0 + std_interval / mean_interval)
     
     # Spam association
     spam_record_cnt = user_records['is_spam_record'].sum()
@@ -414,7 +437,7 @@ axes[1].set_ylabel('Number of Users')
 axes[1].set_title('Distribution of External DOI Consistency\n(Threshold Highlighted)')
 
 # Highlight threshold region
-threshold = CONFIG['external_doi_consistency_threshold']
+threshold = CONFIG.external_doi_consistency_threshold
 mask = users_df['external_doi_consistency'] >= threshold
 axes[1].hist(users_df.loc[mask, 'external_doi_consistency'], bins=bins, alpha=0.9, 
              color='red', edgecolor='black', label=f'≥{threshold} ({mask.sum()} users)')
@@ -552,10 +575,10 @@ axes[0,0].set_xscale('log')
 plt.colorbar(scatter1, ax=axes[0,0], label='Repetitive Author Score')
 
 # Add threshold lines
-axes[0,0].axhline(y=CONFIG['external_doi_consistency_threshold'], color='red', linestyle='--', 
-                  alpha=0.7, label=f'DOI threshold ({CONFIG["external_doi_consistency_threshold"]})')
-axes[0,0].axvline(x=CONFIG['min_records_threshold'], color='red', linestyle='--', 
-                  alpha=0.7, label=f'Records threshold ({CONFIG["min_records_threshold"]})')
+axes[0,0].axhline(y=CONFIG.external_doi_consistency_threshold, color='red', linestyle='--', 
+                  alpha=0.7, label=f'DOI threshold ({CONFIG.external_doi_consistency_threshold})')
+axes[0,0].axvline(x=CONFIG.min_records_threshold, color='red', linestyle='--', 
+                  alpha=0.7, label=f'Records threshold ({CONFIG.min_records_threshold})')
 axes[0,0].legend()
 
 # 2. Author patterns vs upload patterns
@@ -607,16 +630,16 @@ print("Multi-dimensional scatter analysis saved to figures/multi_dimensional_ana
 print("Applying journal runner detection heuristics...")
 
 candidates = users_df[
-    (users_df['n_records'] >= CONFIG['min_records_threshold']) &
-    (users_df['external_doi_consistency'] >= CONFIG['external_doi_consistency_threshold']) &
-    (users_df['upload_regularity'] >= CONFIG['min_upload_regularity']) &
-    (users_df['spam_record_ratio'] <= CONFIG['max_spam_ratio']) &
+    (users_df['n_records'] >= CONFIG.min_records_threshold) &
+    (users_df['external_doi_consistency'] >= CONFIG.external_doi_consistency_threshold) &
+    (users_df['upload_regularity'] >= CONFIG.min_upload_regularity) &
+    (users_df['spam_record_ratio'] <= CONFIG.max_spam_ratio) &
     (~users_df['has_safe_community']) &  # Exclude users with safe communities
-    (users_df['no_repetitive_author_score'] >= CONFIG['repetitive_author_threshold'])  # High repetitive author score
+    (users_df['no_repetitive_author_score'] >= CONFIG.repetitive_author_threshold)  # High repetitive author score
 ].sort_values('external_doi_consistency', ascending=False)
 
 print(f"\nFound {len(candidates)} users meeting journal runner criteria")
-print(f"Out of {len(users_df)} total users with >= {CONFIG['min_records_threshold']} records")
+print(f"Out of {len(users_df)} total users with >= {CONFIG.min_records_threshold} records")
 
 # Display top candidates
 print("\nTop 20 Journal Runner Candidates:")
@@ -888,13 +911,13 @@ print(f"   • Users with ≥50 records: {users_with_50_plus:,} ({users_with_50_
 print(f"   • Journal runner candidates: {candidate_count:,} ({candidate_count/users_with_50_plus*100:.1f}% of high-volume users)")
 
 print(f"\n🎯 DETECTION CRITERIA APPLIED:")
-print(f"   • Minimum records: {CONFIG['min_records_threshold']}")
-print(f"   • External DOI consistency threshold: {CONFIG['external_doi_consistency_threshold']}")
-print(f"   • Max external prefixes: {CONFIG['max_external_prefixes']}")
-print(f"   • Min upload regularity: {CONFIG['min_upload_regularity']}")
-print(f"   • Max spam ratio: {CONFIG['max_spam_ratio']}")
-print(f"   • Min repetitive author score: {CONFIG['repetitive_author_threshold']}")
-print(f"   • Exclude safe communities: {CONFIG['safe_communities']}")
+print(f"   • Minimum records: {CONFIG.min_records_threshold}")
+print(f"   • External DOI consistency threshold: {CONFIG.external_doi_consistency_threshold}")
+print(f"   • Max external prefixes: {CONFIG.max_external_prefixes}")
+print(f"   • Min upload regularity: {CONFIG.min_upload_regularity}")
+print(f"   • Max spam ratio: {CONFIG.max_spam_ratio}")
+print(f"   • Min repetitive author score: {CONFIG.repetitive_author_threshold}")
+print(f"   • Exclude safe communities: {CONFIG.safe_communities}")
 
 print(f"\n📈 CANDIDATE CHARACTERISTICS:")
 if len(candidates) > 0:
